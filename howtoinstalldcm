@@ -1,0 +1,633 @@
+# DCM4CHEE Installation Guide - Docker
+
+## Prerequisites
+
+Before installing DCM4CHEE, ensure you have:
+- Ubuntu 20.04, 22.04, or 24.04
+- Root or sudo access
+- At least 4GB RAM
+- 20GB free disk space
+
+## Step 1: Install Docker and Docker Compose
+
+### Install Docker
+
+```bash
+# Update package index
+sudo apt update
+
+# Install prerequisites
+sudo apt install apt-transport-https ca-certificates curl software-properties-common
+
+# Add Docker's official GPG key
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo gpg --dearmor -o /usr/share/keyrings/docker-archive-keyring.gpg
+
+# Add Docker repository
+echo "deb [arch=amd64 signed-by=/usr/share/keyrings/docker-archive-keyring.gpg] https://download.docker.com/linux/ubuntu $(lsb_release -cs) stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+# Install Docker
+sudo apt update
+sudo apt install docker-ce docker-ce-cli containerd.io docker-compose-plugin
+
+# Verify Docker installation
+sudo docker --version
+docker compose version
+```
+
+### Add User to Docker Group (Optional)
+
+```bash
+# Add current user to docker group
+sudo usermod -aG docker $USER
+
+# Apply the new group membership (or log out and back in)
+newgrp docker
+
+# Verify you can run docker without sudo
+docker ps
+```
+
+## Step 2: Create Required Directories
+
+```bash
+# Create all volume directories for DCM4CHEE
+sudo mkdir -p /var/local/dcm4chee-arc/ldap
+sudo mkdir -p /var/local/dcm4chee-arc/slapd.d
+sudo mkdir -p /var/local/dcm4chee-arc/db
+sudo mkdir -p /var/local/dcm4chee-arc/wildfly
+sudo mkdir -p /var/local/dcm4chee-arc/storage
+
+# Set appropriate permissions
+sudo chown -R $USER:$USER /var/local/dcm4chee-arc
+
+# Verify directories are created
+ls -la /var/local/dcm4chee-arc/
+```
+
+## Step 3: Create Docker Compose Configuration
+
+```bash
+# Create a directory for DCM4CHEE
+mkdir -p ~/dcm4chee
+cd ~/dcm4chee
+
+# Create the docker-compose.yml file
+nano docker-compose.yml
+```
+
+### Docker Compose Configuration
+
+Paste the following content into `docker-compose.yml`:
+
+```yaml
+version: "3"
+services:
+  ldap:
+    image: dcm4che/slapd-dcm4chee:2.6.8-34.1
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+    ports:
+      - "389:389"
+    environment:
+      STORAGE_DIR: /storage/fs1
+    volumes:
+      - /var/local/dcm4chee-arc/ldap:/var/lib/openldap/openldap-data
+      - /var/local/dcm4chee-arc/slapd.d:/etc/openldap/slapd.d
+  db:
+    image: dcm4che/postgres-dcm4chee:17.4-34
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+    ports:
+     - "5432:5432"
+    environment:
+      POSTGRES_DB: pacsdb
+      POSTGRES_USER: pacs
+      POSTGRES_PASSWORD: pacs
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+      - /var/local/dcm4chee-arc/db:/var/lib/postgresql/data
+  arc:
+    image: dcm4che/dcm4chee-arc-psql:5.34.1
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+    ports:
+      - "8080:8080"
+      - "8443:8443"
+      - "9990:9990"
+      - "9993:9993"
+      - "11112:11112"
+      - "2762:2762"
+      - "2575:2575"
+      - "12575:12575"
+    environment:
+      POSTGRES_DB: pacsdb
+      POSTGRES_USER: pacs
+      POSTGRES_PASSWORD: pacs
+      WILDFLY_CHOWN: /storage
+      WILDFLY_WAIT_FOR: ldap:389 db:5432
+    depends_on:
+      - ldap
+      - db
+    volumes:
+      - /etc/localtime:/etc/localtime:ro
+      - /etc/timezone:/etc/timezone:ro
+      - /var/local/dcm4chee-arc/wildfly:/opt/wildfly/standalone
+      - /var/local/dcm4chee-arc/storage:/storage
+```
+
+Save and exit:
+- Press `Ctrl + O` to save
+- Press `Enter` to confirm
+- Press `Ctrl + X` to exit
+
+## Step 4: Start DCM4CHEE
+
+```bash
+# Make sure you're in the correct directory
+cd ~/dcm4chee
+
+# Pull the images (optional, will happen automatically)
+docker compose pull
+
+# Start all containers in detached mode
+docker compose up -d
+
+# Wait for containers to start (may take 2-3 minutes)
+```
+
+## Step 5: Verify Installation
+
+```bash
+# Check if all containers are running
+docker compose ps
+
+# Expected output: 3 containers (ldap, db, arc) should be "Up"
+
+# View logs for all services
+docker compose logs -f
+
+# View logs for specific service
+docker compose logs -f arc
+
+# Check if containers are healthy
+docker ps
+```
+
+## Step 6: Configure Firewall (Allow Access via IP)
+
+To access DCM4CHEE from other computers on your network, you need to open the required ports.
+
+### Using UFW (Ubuntu Firewall)
+
+```bash
+# Check if UFW is active
+sudo ufw status
+
+# If UFW is inactive, enable it
+sudo ufw enable
+
+# Allow all DCM4CHEE ports
+sudo ufw allow 389/tcp comment 'DCM4CHEE LDAP'
+sudo ufw allow 5432/tcp comment 'DCM4CHEE PostgreSQL'
+sudo ufw allow 8080/tcp comment 'DCM4CHEE HTTP'
+sudo ufw allow 8443/tcp comment 'DCM4CHEE HTTPS'
+sudo ufw allow 9990/tcp comment 'DCM4CHEE WildFly Management'
+sudo ufw allow 9993/tcp comment 'DCM4CHEE WildFly Management HTTPS'
+sudo ufw allow 11112/tcp comment 'DCM4CHEE DICOM C-STORE'
+sudo ufw allow 2762/tcp comment 'DCM4CHEE DICOM C-FIND/C-MOVE'
+sudo ufw allow 2575/tcp comment 'DCM4CHEE HL7'
+sudo ufw allow 12575/tcp comment 'DCM4CHEE HL7 TLS'
+
+# Reload firewall
+sudo ufw reload
+
+# Verify rules are added
+sudo ufw status numbered
+```
+
+### Using iptables (Alternative)
+
+```bash
+# Allow all DCM4CHEE ports
+sudo iptables -A INPUT -p tcp --dport 389 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 5432 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 8080 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 8443 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 9990 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 9993 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 11112 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 2762 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 2575 -j ACCEPT
+sudo iptables -A INPUT -p tcp --dport 12575 -j ACCEPT
+
+# Save iptables rules
+sudo netfilter-persistent save
+
+# Or for older systems
+sudo iptables-save | sudo tee /etc/iptables/rules.v4
+```
+
+### Get Your Server IP Address
+
+```bash
+# Find your IP address
+ip addr show
+
+# Or use hostname
+hostname -I
+
+# Or check specific interface (e.g., eth0, ens33)
+ip addr show eth0
+```
+
+## Step 7: Access DCM4CHEE
+
+Once all containers are running (check logs for "Started Server"), you can access DCM4CHEE:
+
+### Local Access
+
+- **Web Interface (HTTP)**: http://localhost:8080/dcm4chee-arc/ui2
+- **Web Interface (HTTPS)**: https://localhost:8443/dcm4chee-arc/ui2
+
+### Remote Access (from other computers)
+
+Replace `YOUR_SERVER_IP` with your actual server IP address:
+
+- **Web Interface (HTTP)**: http://YOUR_SERVER_IP:8080/dcm4chee-arc/ui2
+- **Web Interface (HTTPS)**: https://YOUR_SERVER_IP:8443/dcm4chee-arc/ui2
+
+Example: http://192.168.1.100:8080/dcm4chee-arc/ui2
+
+### Default Credentials
+
+- **Username**: `admin`
+- **Password**: `admin`
+
+### Available Ports
+
+| Port | Service | Protocol | Purpose |
+|------|---------|----------|---------|
+| 389 | LDAP | TCP | Directory Service |
+| 5432 | PostgreSQL | TCP | Database |
+| 8080 | HTTP | TCP | Web Interface |
+| 8443 | HTTPS | TCP | Secure Web Interface |
+| 9990 | WildFly Admin | TCP | Management Console |
+| 9993 | WildFly Admin HTTPS | TCP | Secure Management Console |
+| 11112 | DICOM C-STORE | TCP | Image Storage |
+| 2762 | DICOM C-FIND/C-MOVE | TCP | Query/Retrieve |
+| 2575 | HL7 | TCP | HL7 Messages |
+| 12575 | HL7 TLS | TCP | Secure HL7 Messages |
+
+## Common Docker Compose Commands
+
+```bash
+# Start containers
+docker compose up -d
+
+# Stop containers
+docker compose down
+
+# Restart containers
+docker compose restart
+
+# Restart specific service
+docker compose restart arc
+
+# View container status
+docker compose ps
+
+# View logs (all services)
+docker compose logs -f
+
+# View logs (specific service)
+docker compose logs -f arc
+
+# Update images and restart
+docker compose pull
+docker compose up -d
+
+# Stop and remove everything including volumes (⚠️ DELETES ALL DATA)
+docker compose down -v
+```
+
+## Troubleshooting
+
+### Port 5432 Already in Use
+
+**Error**: `failed to bind host port 0.0.0.0:5432/tcp: address already in use`
+
+**Solution**: Stop local PostgreSQL service
+
+```bash
+# Stop PostgreSQL
+sudo systemctl stop postgresql
+sudo systemctl disable postgresql
+
+# Verify it's stopped
+sudo systemctl status postgresql
+
+# Restart Docker containers
+cd ~/dcm4chee
+docker compose down
+docker compose up -d
+```
+
+### Port 8080 Already in Use
+
+**Solution**: Change the port mapping in `docker-compose.yml`
+
+```yaml
+# Change from:
+ports:
+  - "8080:8080"
+
+# To (using port 8081 instead):
+ports:
+  - "8081:8080"
+```
+
+Then restart:
+```bash
+docker compose down
+docker compose up -d
+```
+
+### Containers Keep Restarting
+
+```bash
+# Check logs for errors
+docker compose logs arc
+docker compose logs db
+docker compose logs ldap
+
+# Common issues:
+# 1. Database not ready - wait 2-3 minutes
+# 2. Permission issues - check directory ownership
+# 3. Port conflicts - check if ports are available
+```
+
+### Check Port Availability
+
+```bash
+# Check if port is in use
+sudo ss -tulpn | grep 5432
+sudo ss -tulpn | grep 8080
+
+# Find process using a port
+sudo lsof -i :5432
+
+# Check if DCM4CHEE ports are accessible
+sudo ss -tulpn | grep -E '389|5432|8080|8443|9990|9993|11112|2762|2575|12575'
+```
+
+### Cannot Access via IP Address
+
+**Problem**: Can access via localhost but not via IP address from another computer
+
+**Solutions**:
+
+1. **Check firewall rules**:
+```bash
+sudo ufw status
+# Ensure all DCM4CHEE ports are allowed
+```
+
+2. **Verify Docker is binding to all interfaces**:
+```bash
+# Check if Docker containers are listening on 0.0.0.0
+sudo netstat -tulpn | grep docker
+```
+
+3. **Test connectivity from remote machine**:
+```bash
+# From another computer, test if port is reachable
+telnet YOUR_SERVER_IP 8080
+
+# Or use nc (netcat)
+nc -zv YOUR_SERVER_IP 8080
+```
+
+4. **Check if server is behind a router**: If accessing from outside your local network, you may need to configure port forwarding on your router.
+
+### Firewall Not Allowing Connections
+
+```bash
+# Disable firewall temporarily to test (not recommended for production)
+sudo ufw disable
+
+# Try accessing DCM4CHEE
+# If it works, the firewall was blocking it
+
+# Re-enable firewall
+sudo ufw enable
+
+# Add the missing ports
+sudo ufw allow 8080/tcp
+```
+
+### Remove Firewall Rules
+
+```bash
+# List all rules with numbers
+sudo ufw status numbered
+
+# Delete a specific rule by number
+sudo ufw delete [NUMBER]
+
+# Or delete by rule specification
+sudo ufw delete allow 8080/tcp
+```
+
+### Reset Installation (Start Fresh)
+
+```bash
+# Stop and remove containers
+cd ~/dcm4chee
+docker compose down -v
+
+# Remove data directories
+sudo rm -rf /var/local/dcm4chee-arc/*
+
+# Recreate directories
+sudo mkdir -p /var/local/dcm4chee-arc/{ldap,slapd.d,db,wildfly,storage}
+sudo chown -R $USER:$USER /var/local/dcm4chee-arc
+
+# Start again
+docker compose up -d
+```
+
+## Backup and Restore
+
+### Backup
+
+```bash
+# Stop containers
+docker compose down
+
+# Backup data directories
+sudo tar -czf dcm4chee-backup-$(date +%Y%m%d).tar.gz /var/local/dcm4chee-arc/
+
+# Start containers
+docker compose up -d
+```
+
+### Restore
+
+```bash
+# Stop containers
+docker compose down
+
+# Restore from backup
+sudo tar -xzf dcm4chee-backup-YYYYMMDD.tar.gz -C /
+
+# Start containers
+docker compose up -d
+```
+
+## Updating DCM4CHEE
+
+```bash
+# Pull latest images
+cd ~/dcm4chee
+docker compose pull
+
+# Restart with new images
+docker compose down
+docker compose up -d
+
+# Verify update
+docker compose ps
+docker compose logs -f arc
+```
+
+## Uninstalling DCM4CHEE
+
+```bash
+# Stop and remove containers
+cd ~/dcm4chee
+docker compose down -v
+
+# Remove data directories
+sudo rm -rf /var/local/dcm4chee-arc
+
+# Remove Docker images (optional)
+docker rmi dcm4che/dcm4chee-arc-psql:5.34.1
+docker rmi dcm4che/postgres-dcm4chee:17.4-34
+docker rmi dcm4che/slapd-dcm4chee:2.6.8-34.1
+
+# Remove compose file
+rm -rf ~/dcm4chee
+```
+
+## Performance Tuning
+
+### Increase Memory for Arc Container
+
+Edit `docker-compose.yml` and add to the `arc` service:
+
+```yaml
+arc:
+  image: dcm4che/dcm4chee-arc-psql:5.34.1
+  environment:
+    JAVA_OPTS: "-Xms512m -Xmx2048m"
+    # ... other environment variables
+```
+
+### Increase PostgreSQL Performance
+
+Edit `docker-compose.yml` and add to the `db` service:
+
+```yaml
+db:
+  image: dcm4che/postgres-dcm4chee:17.4-34
+  command: postgres -c max_connections=200 -c shared_buffers=256MB
+  # ... rest of configuration
+```
+
+## Security Considerations
+
+### Securing Remote Access
+
+If you're allowing remote access, consider these security measures:
+
+#### 1. Change Default Password
+
+After first login, change the default admin password:
+- Login to http://YOUR_SERVER_IP:8080/dcm4chee-arc/ui2
+- Navigate to user management
+- Change the admin password
+
+#### 2. Restrict Access by IP (Recommended for Production)
+
+Instead of opening ports to everyone, restrict to specific IP addresses:
+
+```bash
+# Allow only from specific IP
+sudo ufw allow from 192.168.1.50 to any port 8080
+
+# Allow from entire subnet
+sudo ufw allow from 192.168.1.0/24 to any port 8080
+
+# Allow multiple IPs for different ports
+sudo ufw allow from 192.168.1.50 to any port 8080
+sudo ufw allow from 192.168.1.51 to any port 11112
+```
+
+#### 3. Use HTTPS Instead of HTTP
+
+Always use port 8443 (HTTPS) instead of 8080 (HTTP) for remote access:
+- https://YOUR_SERVER_IP:8443/dcm4chee-arc/ui2
+
+#### 4. Close Unused Ports
+
+If you're not using certain services, close those ports:
+
+```bash
+# Example: If not using HL7, close those ports
+sudo ufw delete allow 2575/tcp
+sudo ufw delete allow 12575/tcp
+```
+
+#### 5. Limit Database Access
+
+PostgreSQL port (5432) should generally not be exposed to the internet:
+
+```bash
+# Remove public access to PostgreSQL
+sudo ufw delete allow 5432/tcp
+
+# Allow only from specific IP if needed
+sudo ufw allow from 192.168.1.50 to any port 5432
+```
+
+### Network Access Test
+
+Test your DCM4CHEE accessibility:
+
+```bash
+# From the server itself
+curl http://localhost:8080/dcm4chee-arc/ui2
+
+# From another computer on the network
+curl http://YOUR_SERVER_IP:8080/dcm4chee-arc/ui2
+
+# Test DICOM connectivity (requires dcmtk tools)
+echoscu YOUR_SERVER_IP 11112
+```
+
+- **Official Documentation**: https://github.com/dcm4che/dcm4chee-arc-light/wiki
+- **Docker Hub**: https://hub.docker.com/u/dcm4che
+- **DICOM Standard**: https://www.dicomstandard.org/
+
+---
+
+**Last Updated**: November 2024  
+**DCM4CHEE Version**: 5.34.1  
+**Ubuntu Versions**: Tested on Ubuntu 20.04, 22.04, 24.04
